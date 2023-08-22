@@ -124,7 +124,7 @@ const ConfigPath = joinP(__dirname, './config.js'), LogPath = joinP(__dirname, '
 }, cookies = {};
 
 let uuidOrg, curPrompt = {}, prevPrompt = {}, prevMessages = [], prevImpersonated = false, Config = {
-    Cookie: '',
+    Cookie: 'sessionKey=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',
     CookieArray: [],
     Ip: process.env.PORT ? '0.0.0.0' : '127.0.0.1',
     Port: process.env.PORT || 8444,
