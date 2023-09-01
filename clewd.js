@@ -4,7 +4,7 @@
 */
 'use strict';
 
-const {createServer: Server, IncomingMessage, ServerResponse} = require('node:http'), {createHash: Hash, randomUUID, randomInt, randomBytes} = require('node:crypto'), {TransformStream, ReadableStream} = require('node:stream/web'), {Readable, Writable} = require('node:stream'), {Blob} = require('node:buffer'), {existsSync: exists, writeFileSync: write, createWriteStream} = require('node:fs'), {join: joinP} = require('node:path'), {ClewdSuperfetch: Superfetch, SuperfetchAvailable} = require('./lib/clewd-superfetch'), {AI, fileName, genericFixes, bytesToSize, setTitle, checkResErr, Replacements, Main} = require('./lib/clewd-utils'), ClewdStream = require('./lib/clewd-stream');
+const {createServer: Server, IncomingMessage, ServerResponse} = require('node:http'), {createHash: Hash, randomUUID, randomInt, randomBytes} = require('node:crypto'), {TransformStream, ReadableStream} = require('node:stream/web'), {Readable, Writable} = require('node:stream'), {Blob} = require('node:buffer'), {existsSync: exists, writeFileSync: write, createWriteStream} = require('node:fs'), {join: joinP} = require('node:path'), {ClewdSuperfetch: Superfetch, SuperfetchAvailable} = require('./lib/clewd-superfetch'), {AI, fileName, genericFixes, bytesToSize, setTitle, checkResErr, Replacements, Main, fetch429} = require('./lib/clewd-utils'), ClewdStream = require('./lib/clewd-stream');
 
 /******************************************************* */
 let currentIndex = 0, Firstlogin = true, changeflag = 0;
@@ -13,7 +13,7 @@ const events = require('events'), CookieChanger = new events.EventEmitter();
 
 CookieChanger.on('ChangeCookie', () => {
     Proxy && Proxy.close();
-    console.log('\nChanging Cookie...\n');
+    console.log(`\nChanging Cookie...\n`);
     Proxy.listen(Config.Port, Config.Ip, onListen);
     Proxy.on('error', (err => {
         console.error('Proxy error\n%o', err);
@@ -36,8 +36,7 @@ const simpletokenizer = (str) => {
 }, padJson = (json) => {
     if (Config.padtxt_placeholder.length > 0) {
         var placeholder = Config.padtxt_placeholder;
-    }
-    else {
+    } else {
         const bytes = randomInt(5, 15);
         var placeholder = randomBytes(bytes).toString('hex');
     }
@@ -97,24 +96,24 @@ const simpletokenizer = (str) => {
         content = content.replace(processMatch[0], illustrationMatch[0] + processMatch[0]); // 将<illustration>部分插入<delete>部分的前面
     }
 
-    content = content.replace(/\n\n<(hidden|\/plot)>[\s\S]*?\n\n<extra_prompt>\s*/, '\n\nHuman:'); //sd prompt用
+    if (Config.Settings.xmlPlot === 2) {
+        let segcontent = content.split('\n\nHuman:');
+        let processedseg = segcontent.map(seg => {
+            return seg.replace(/(\n\nAssistant:[\s\S]+?)(\n\n<hidden>[\s\S]+?<\/hidden>)/g, '$2$1');
+        });
+        let seglength = processedseg.length;
+        (/Assistant: *.$/.test(content) && seglength > 1) && (processedseg[seglength - 2] = processedseg.splice(seglength - 1, 1, processedseg[seglength - 2])[0]);
+        content = processedseg.join('\n\nHuman:');
+    } else {
+        content = content.replace(/\n\n<(hidden|\/plot)>[\s\S]*?\n\n<extra_prompt>\s*/, '\n\nHuman:'); //sd prompt用
+    }
 
     //消除空XML tags或多余的\n
+    content = content.replace(/(\n)<\/hidden>\n+?<hidden>\n/g, '');
+    content = content.replace(/\n<(example|hidden)>\n+?<\/\1>/g, '');
     content = content.replace(/(?<=\n<(card|hidden|example)>\n)\s*/g, '');
     content = content.replace(/\s*(?=\n<\/(card|hidden|example)>(\n|$))/g, '');
-    content = content.replace(/\n<(example|hidden)>\n<\/\1>/g, '');
-
-    if (Config.Settings.xmlPlot === 2) {
-        let hiddenregex = /\n<hidden>[\s\S]*?<\/hidden>/g;
-        let lastHumanIndex = content.lastIndexOf('\n\nHuman:');
-        let jailbreak = content.slice(lastHumanIndex).match(hiddenregex);
-        if (jailbreak) {
-            content = content.replace(jailbreak, '');                      
-            content = content.slice(0, lastHumanIndex) + '\n\nSystem:' + jailbreak + '\n' + content.slice(lastHumanIndex);
-        }
-    }
-    
-    content = content.replace(/\n\n\n/g, '\n\n');
+    content = content.replace(/(?<=\n)\n(?=\n)/g, '');
 
     return content;
 };
@@ -227,11 +226,11 @@ const updateParams = res => {
             })
         }
     }
-    if (Config.CookieArray.length > 0) {
+    if (Config.CookieArray?.length > 0) {
         Config.Cookie = Config.CookieArray[currentIndex];
         currentIndex = (currentIndex + 1) % Config.CookieArray.length;
     }
-/***************************** */      
+/***************************** */
     if ('SET YOUR COOKIE HERE' === Config.Cookie || Config.Cookie?.length < 1) {
         throw Error('Set your cookie inside config.js');
     }
@@ -246,13 +245,13 @@ const updateParams = res => {
         }
     });
 /**************************** */
-    if ((accRes.statusText === 'Forbidden') && Config.CookieArray.length > 0) {
+    if (accRes.statusText === 'Forbidden' && Config.CookieArray.length > 0) {
         Config.CookieArray = Config.CookieArray.filter(item => item !== Config.Cookie);
         writeSettings(Config);
-        currentIndex = currentIndex - 1;
+        currentIndex = currentIndex < 1 ? 0 : currentIndex - 1;
         return CookieChanger.emit('ChangeCookie');
     }
-/**************************** */    
+/**************************** */
     await checkResErr(accRes);
     const accInfo = (await accRes.json())?.[0];
     if (!accInfo || accInfo.error) {
@@ -296,7 +295,7 @@ const updateParams = res => {
             console.log(`${type}: ${json.error ? json.error.message || json.error.type || json.detail : 'OK'}`);
         })(flag.type))));
 /***************************** */
-        CookieChanger.emit('ChangeCookie');
+        Config.CookieArray?.length > 0 && CookieChanger.emit('ChangeCookie');
 /***************************** */
     }
     const convRes = await fetch(`${Config.rProxy}/api/organizations/${uuidOrg}/chat_conversations`, {
@@ -307,6 +306,30 @@ const updateParams = res => {
         }
     }), conversations = await convRes.json();
     updateParams(convRes);
+/**************************** */
+    if (Config.Cookiecounter === -1 && currentIndex) {
+        Conversation.uuid = randomUUID().toString();
+        const res = await (Config.Settings.Superfetch ? Superfetch : fetch)(`${Config.rProxy}/api/organizations/${uuidOrg}/chat_conversations`, {
+            headers: {
+                ...AI.hdr(),
+                Cookie: getCookies()
+            },
+            method: 'POST',
+            body: JSON.stringify({
+                uuid: Conversation.uuid,
+                name: ''
+            })
+        });
+        if (res.status === 403 && Config.CookieArray.length > 0) {
+            Config.CookieArray = Config.CookieArray.filter(item => item !== Config.Cookie);
+            writeSettings(Config);
+            currentIndex = currentIndex < 1 ? 0 : currentIndex - 1;
+        }
+        changeflag += 1;
+        console.log(`Counter: ${changeflag}\nstatus: ${res.status}`);
+        return CookieChanger.emit('ChangeCookie');
+    }
+/**************************** */
     conversations.length > 0 && await Promise.all(conversations.map((conv => deleteChat(conv.uuid))));
 }, writeSettings = async (config, firstRun = false) => {
     write(ConfigPath, `/*\n* https://rentry.org/teralomaniac_clewd\n* https://github.com/teralomaniac/clewd\n*/\n\n// SET YOUR COOKIE BELOW\n\nmodule.exports = ${JSON.stringify(config, null, 4)}\n\n/*\n BufferSize\n * How many characters will be buffered before the AI types once\n * lower = less chance of \`PreventImperson\` working properly\n\n ---\n\n SystemInterval\n * How many messages until \`SystemExperiments alternates\`\n\n ---\n\n Other settings\n * https://gitgud.io/ahsk/clewd/#defaults\n * and\n * https://gitgud.io/ahsk/clewd/-/blob/master/CHANGELOG.md\n */`.trim().replace(/((?<!\r)\n|\r(?!\n))/g, '\r\n'));
@@ -458,16 +481,13 @@ const updateParams = res => {
                             });
                             updateParams(res);
 /**************************** */
-                            if (res.status < 200 || res.status >= 300) {
-                                let json = await res.json();
-                                if ((json.error.message.includes('Account has not completed verification')) && Config.CookieArray.length > 0) {
-                                    Config.CookieArray = Config.CookieArray.filter(item => item !== Config.Cookie);
-                                    writeSettings(Config);
-                                    currentIndex = currentIndex - 1;
-                                    CookieChanger.emit('ChangeCookie');
-                                }   
+                            if (res.status === 403 && Config.CookieArray?.length > 0) {
+                                Config.CookieArray = Config.CookieArray.filter(item => item !== Config.Cookie);
+                                writeSettings(Config);
+                                currentIndex = currentIndex < 1 ? 0 : currentIndex - 1;
+                                CookieChanger.emit('ChangeCookie');
                             }
-/**************************** */                             
+/**************************** */
                             await checkResErr(res);
                             return res;
                         })(signal);
@@ -489,10 +509,10 @@ const updateParams = res => {
                             message.customname = (message => [ 'assistant', 'user' ].includes(message.role) && null != message.name && !(message.name in Replacements))(message);
                             if (next) {
                                 if (message.name && next.name && message.name === next.name) {
-                                    message.content += '\n' + next.content;
+                                    message.content += '\n\n' + next.content; //message.content += '\n' + next.content;
                                     next.merged = true;
                                 } else if (next.role === message.role) {
-                                    message.content += '\n' + next.content;
+                                    message.content += '\n\n' + next.content; //message.content += '\n' + next.content;
                                     next.merged = true;
                                 }
                             }
@@ -569,7 +589,7 @@ const updateParams = res => {
                     Config.Settings.xmlPlot && (prompt = AddxmlPlot(prompt));
                     Config.Settings.FullColon && (prompt = prompt.replace(/(?<=\n\n(H(?:uman)?|A(?:ssistant)?|[Ss]ystem)):[ ]?/g, '： '));
                     Config.Settings.padtxt && (prompt = padJson(prompt));
-/****************************************************************/                    
+/****************************************************************/
                     Logger?.write(`\n\n-------\n[${(new Date).toLocaleString()}]\n####### PROMPT (${type}):\n${prompt}\n--\n####### REPLY:\n`);
                     retryRegen || (fetchAPI = await (async (signal, model, prompt, temperature, type) => {
                         const attachments = [];
@@ -641,23 +661,26 @@ const updateParams = res => {
                     }
                 }
                 clearInterval(titleTimer);
+/******************************** */
+                fetch429 && CookieChanger.emit('ChangeCookie');
+/******************************** */                
                 if (clewdStream) {
                     clewdStream.censored && console.warn('[33mlikely your account is hard-censored[0m');
                     prevImpersonated = clewdStream.impersonated;
                     setTitle('ok ' + bytesToSize(clewdStream.size));
-/******************************** */ 
+                    console.log(`${200 == fetchAPI.status ? '[32m' : '[33m'}${fetchAPI.status}![0m\n`);
+/******************************** */
                     if (clewdStream.readonly) {
                         Config.CookieArray = Config.CookieArray.filter(item => item !== Config.Cookie);
                         writeSettings(Config);
-                        currentIndex = currentIndex - 1;
+                        currentIndex = currentIndex < 1 ? 0 : currentIndex - 1;
                     }
-                    changeflag = changeflag + 1;
-                    if (clewdStream.cookiechange || changeflag == Config.Cookiecounter) {
+                    changeflag += 1;
+                    if (Config.CookieArray?.length > 0 && (clewdStream.cookiechange || (Config.Cookiecounter && changeflag >= Config.Cookiecounter))) {
                         changeflag = 0;
                         CookieChanger.emit('ChangeCookie');
                     }
 /******************************** */
-                    console.log(`${200 == fetchAPI.status ? '[32m' : '[33m'}${fetchAPI.status}![0m\n`);
                     clewdStream.empty();
                 }
                 if (prevImpersonated) {
@@ -728,16 +751,16 @@ const updateParams = res => {
                     Config.Settings[setting] = process.env[setting] ?? Config.Settings[setting];
                 }
             } else {
-                Config[key] = key === 'CookieArray' ? (process.env[key]?.split(',') ?? Config[key]) : (process.env[key] ?? Config[key]);
+                Config[key] = key === 'CookieArray' ? (process.env[key]?.split(',')?.map(x => x.replace(/[\[\]"\s]/g, '')) ?? Config[key]) : (process.env[key] ?? Config[key]);
             }
         }
 /***************************** */
     })();
-/***************************** */    
+/***************************** */
     !Config.rProxy && (Config.rProxy = AI.end());
     Config.rProxy.endsWith('/') && (Config.rProxy = Config.rProxy.slice(0, -1));
-    currentIndex = Math.floor(Math.random() * Config.CookieArray.length);
-/***************************** */    
+    Config.Cookiecounter !== -1 && (currentIndex = Math.floor(Math.random() * Config.CookieArray.length));
+/***************************** */
     Proxy.listen(Config.Port, Config.Ip, onListen);
     Proxy.on('error', (err => {
         console.error('Proxy error\n%o', err);
