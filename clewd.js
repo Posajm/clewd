@@ -7,7 +7,7 @@
 const {createServer: Server, IncomingMessage, ServerResponse} = require('node:http'), {createHash: Hash, randomUUID, randomInt, randomBytes} = require('node:crypto'), {TransformStream, ReadableStream} = require('node:stream/web'), {Readable, Writable} = require('node:stream'), {Blob} = require('node:buffer'), {existsSync: exists, writeFileSync: write, createWriteStream} = require('node:fs'), {join: joinP} = require('node:path'), {ClewdSuperfetch: Superfetch, SuperfetchAvailable} = require('./lib/clewd-superfetch'), {AI, fileName, genericFixes, bytesToSize, setTitle, checkResErr, Replacements, Main, fetch429} = require('./lib/clewd-utils'), ClewdStream = require('./lib/clewd-stream');
 
 /******************************************************* */
-let currentIndex = 0, Firstlogin = true, changeflag = 0;
+let currentIndex = 0, Firstlogin = true, changeflag = 0, changetime = 0, totaltime = 0;
 
 const events = require('events'), CookieChanger = new events.EventEmitter();
 
@@ -64,48 +64,57 @@ const simpletokenizer = (str) => {
     content = content.replace(/\n\nSystem:\s*/g, '\n\n');
 
     // 在第一个"[Start a new"前面加上"<example>"，在最后一个"[Start a new"前面加上"</example>"
-    let firstChatStart = content.indexOf('\n\n[Start a new');
-    let lastChatStart = content.lastIndexOf('\n\n[Start a new');
-    if (firstChatStart != -1) { 
-        content = content.slice(0, firstChatStart) + '\n\n</card>\n\n<example>' + 
-                content.slice(firstChatStart, lastChatStart) + '\n\n</example>' + 
-                content.slice(lastChatStart);
-    }
-        
+    const firstChatStart = content.indexOf('\n\n[Start a new');
+    const lastChatStart = content.lastIndexOf('\n\n[Start a new');
+    firstChatStart != -1 && (content = content.slice(0, firstChatStart) + '\n\n</card>\n\n<example>' + content.slice(firstChatStart, lastChatStart) + '\n\n</example>' + content.slice(lastChatStart));
+    
     // 之后的第一个"Assistant: "之前插入"\n\n<plot>"
-    let lastChatIndex = content.lastIndexOf('\n\n[Start a new');
+    const lastChatIndex = content.lastIndexOf('\n\n[Start a new');
     if (lastChatIndex != -1 && content.includes('</plot>')) { 
-        let assistantIndex = content.indexOf('\n\nAssistant:', lastChatIndex);
-        if (assistantIndex != -1) {
-            content = content.slice(0, assistantIndex) + '\n\n<plot>' + content.slice(assistantIndex);
-        }
+        const assistantIndex = content.indexOf('\n\nAssistant:', lastChatIndex);
+        assistantIndex != -1 && (content = content.slice(0, assistantIndex) + '\n\n<plot>' + content.slice(assistantIndex));
     }
-  
-    let sexMatch = content.match(/\n##.*?\n<(sex|behavior)>[\s\S]*?<\/\1>\n/);
-    let processMatch = content.match(/\n##.*?\n<process>[\s\S]*?<\/process>\n/);
+
+    const sexMatch = content.match(/\n##.*?\n<(sex|behavior)>[\s\S]*?<\/\1>\n/);
+    const processMatch = content.match(/\n##.*?\n<process>[\s\S]*?<\/process>\n/);
   
     if (sexMatch && processMatch) {
         content = content.replace(sexMatch[0], ''); // 移除<sex>部分
         content = content.replace(processMatch[0], sexMatch[0] + processMatch[0]); // 将<sex>部分插入<delete>部分的前面
     }
 
-    let illustrationMatch = content.match(/\n##.*?\n<illustration>[\s\S]*?<\/illustration>\n/);
+    const illustrationMatch = content.match(/\n##.*?\n<illustration>[\s\S]*?<\/illustration>\n/);
 
     if (illustrationMatch && processMatch) {
         content = content.replace(illustrationMatch[0], ''); // 移除<illustration>部分
         content = content.replace(processMatch[0], illustrationMatch[0] + processMatch[0]); // 将<illustration>部分插入<delete>部分的前面
     }
 
-    if (content.includes('<\/hidden>')) {
-        let segcontent = content.split('\n\nHuman:');
-        let processedseg = segcontent.map(seg => {
+    content = content.replace(/\n\n<(hidden|\/plot)>[\s\S]*?\n\n<extra_prompt>\s*/, '\n\nHuman:'); //sd prompt用
+
+    let altflag = false;
+    if (content.includes('</hidden>')) {
+        const segcontent = content.split('\n\nHuman:');
+        const processedseg = segcontent.map(seg => {
             return seg.replace(/(\n\nAssistant:[\s\S]+?)(\n\n<hidden>[\s\S]+?<\/hidden>)/g, '$2$1');
         });
-        let seglength = processedseg.length;
-        (/Assistant: *.$/.test(content) && seglength > 1) && (processedseg[seglength - 2] = processedseg.splice(seglength - 1, 1, processedseg[seglength - 2])[0]);
+        const seglength = processedseg.length;
+        if (/Assistant: *.$/.test(content) && seglength > 1 && !processedseg[seglength - 2].includes('\n\nAssistant:')) {
+            altflag = true;
+            processedseg[seglength - 2] = processedseg.splice(seglength - 1, 1, processedseg[seglength - 2])[0];
+        }
         content = processedseg.join('\n\nHuman:');
-    } else {
-        content = content.replace(/\n\n<(hidden|\/plot)>[\s\S]*?\n\n<extra_prompt>\s*/, '\n\nHuman:'); //sd prompt用
+    }
+
+    let advancedJB = false;
+    const prevHumanIndex = content.indexOf("\n\nPrevHuman:");
+    const lastAssistantIndex = content.lastIndexOf("\n\nAssistant:");
+    if (prevHumanIndex != -1 && lastAssistantIndex != -1) {
+        const contentToMove = content.substring(prevHumanIndex);
+        advancedJB = true;
+        content = content.substring(0, prevHumanIndex);
+        content = content.substring(0, lastAssistantIndex) + contentToMove + content.substring(lastAssistantIndex);
+        content = content.replace(/PrevHuman:\s*/, '');
     }
 
     //消除空XML tags或多余的\n
@@ -114,6 +123,12 @@ const simpletokenizer = (str) => {
     content = content.replace(/(?<=\n<(card|hidden|example)>\n)\s*/g, '');
     content = content.replace(/\s*(?=\n<\/(card|hidden|example)>(\n|$))/g, '');
     content = content.replace(/(?<=\n)\n(?=\n)/g, '');
+
+    const altsplitedContent = content.split('\n\nHuman:');
+    if (altsplitedContent.length >= 3 && Config.Settings.xmlPlot === 2 && advancedJB) {
+        const lastIndex = altflag ? altsplitedContent.length - 2 : altsplitedContent.length - 1;
+        content = altsplitedContent.slice(0, lastIndex).join('\n\nHuman:') + '\n\nAltHuman:' + altsplitedContent.slice(lastIndex).join('\n\nHuman:');
+    }
 
     return content;
 };
@@ -215,7 +230,7 @@ const updateParams = res => {
 }, onListen = async () => {
 /***************************** */
     if (Firstlogin) {
-        Firstlogin = false;   
+        Firstlogin = false;
         console.log(`[2m${Main}[0m\n[33mhttp://${Config.Ip}:${Config.Port}/v1[0m\n\n${Object.keys(Config.Settings).map((setting => UnknownSettings.includes(setting) ? `??? [31m${setting}: ${Config.Settings[setting]}[0m` : `[1m${setting}:[0m ${ChangedSettings.includes(setting) ? '[33m' : '[36m'}${Config.Settings[setting]}[0m`)).sort().join('\n')}\n`);
         Config.Settings.Superfetch && SuperfetchAvailable(true);
         if (Config.localtunnel) {
@@ -225,6 +240,7 @@ const updateParams = res => {
                 console.log(`\nTunnel URL for outer websites: ${tunnel.url}/v1\n`);
             })
         }
+        totaltime = Config.CookieArray.length;
     }
     if (Config.CookieArray?.length > 0) {
         Config.Cookie = Config.CookieArray[currentIndex];
@@ -247,7 +263,7 @@ const updateParams = res => {
 /**************************** */
     if (accRes.statusText === 'Forbidden' && Config.CookieArray.length > 0) {
         Config.CookieArray = Config.CookieArray.filter(item => item !== Config.Cookie);
-        writeSettings(Config);
+        (!process.env.Cookie && !process.env.CookieArray) && writeSettings(Config);
         currentIndex = currentIndex < 1 ? 0 : currentIndex - 1;
         return CookieChanger.emit('ChangeCookie');
     }
@@ -308,7 +324,6 @@ const updateParams = res => {
     updateParams(convRes);
 /**************************** */
     if (Config.Cookiecounter === -1 && currentIndex) {
-        if (!currentIndex) return;
         Conversation.uuid = randomUUID().toString();
         const res = await (Config.Settings.Superfetch ? Superfetch : fetch)(`${Config.rProxy}/api/organizations/${uuidOrg}/chat_conversations`, {
             headers: {
@@ -323,11 +338,16 @@ const updateParams = res => {
         });
         if (res.status === 403 && Config.CookieArray.length > 0) {
             Config.CookieArray = Config.CookieArray.filter(item => item !== Config.Cookie);
-            writeSettings(Config);
-            currentIndex = currentIndex - 1;
+            (!process.env.Cookie && !process.env.CookieArray) && writeSettings(Config);
+            currentIndex -= 1;
         }
-        changeflag += 1;
-        console.log(`Counter: ${changeflag}\nstatus: ${res.status}`);
+        if (currentIndex === Config.CookieArray.length - 1) {
+            console.log(`\n\n※※※※※※※※※※※※※※※※※※\n※※※Cookie cleanup completed※※※\n※※※※※※※※※※※※※※※※※※\n\n`);
+            process.exit();
+        };
+        changetime += 1;
+        let percentage = (changetime / totaltime) * 100;
+        console.log(`progress: ${percentage.toFixed(2)}%\nlength: ${Config.CookieArray.length}\nindex: ${currentIndex}\nstatus: ${res.status}`);
         return CookieChanger.emit('ChangeCookie');
     }
 /**************************** */
@@ -484,7 +504,7 @@ const updateParams = res => {
 /**************************** */
                             if (res.status === 403 && Config.CookieArray?.length > 0) {
                                 Config.CookieArray = Config.CookieArray.filter(item => item !== Config.Cookie);
-                                writeSettings(Config);
+                                (!process.env.Cookie && !process.env.CookieArray) && writeSettings(Config);
                                 currentIndex = currentIndex < 1 ? 0 : currentIndex - 1;
                                 CookieChanger.emit('ChangeCookie');
                             }
@@ -506,13 +526,20 @@ const updateParams = res => {
                     let {prompt, systems} = ((messages, type) => {
                         const rgxScenario = /^\[Circumstances and context of the dialogue: ([\s\S]+?)\.?\]$/i, rgxPerson = /^\[([\s\S]+?)'s personality: ([\s\S]+?)\]$/i, messagesClone = JSON.parse(JSON.stringify(messages)), realLogs = messagesClone.filter((message => [ 'user', 'assistant' ].includes(message.role))), sampleLogs = messagesClone.filter((message => message.name)), mergedLogs = [ ...sampleLogs, ...realLogs ];
                         mergedLogs.forEach(((message, idx) => {
-                            const next = realLogs[idx + 1];
+                            const next = mergedLogs[idx + 1];
                             message.customname = (message => [ 'assistant', 'user' ].includes(message.role) && null != message.name && !(message.name in Replacements))(message);
                             if (next) {
-                                if (message.name && next.name && message.name === next.name) {
-                                    message.content += '\n\n' + next.content; //message.content += '\n' + next.content;
-                                    next.merged = true;
-                                } else if (next.role === message.role) {
+                                if ('name' in message && 'name' in next) {
+                                    if (message.name === next.name) {
+                                        message.content += '\n\n' + next.content; //message.content += '\n' + next.content;
+                                        next.merged = true;
+                                    }
+                                } else if ('system' !== next.role) {
+                                    if (next.role === message.role) {
+                                        message.content += '\n\n' + next.content; //message.content += '\n' + next.content;
+                                        next.merged = true;
+                                    }
+                                } else {
                                     message.content += '\n\n' + next.content; //message.content += '\n' + next.content;
                                     next.merged = true;
                                 }
@@ -522,7 +549,7 @@ const updateParams = res => {
                         lastAssistant && Config.Settings.StripAssistant && (lastAssistant.strip = true);
                         const lastUser = realLogs.findLast((message => !message.merged && 'user' === message.role));
                         lastUser && Config.Settings.StripHuman && (lastUser.strip = true);
-                        const systemMessages = messagesClone.filter((message => 'system' === message.role && !message.name));
+                        const systemMessages = messagesClone.filter((message => 'system' === message.role && !('name' in message)));
                         systemMessages.forEach(((message, idx) => {
                             const scenario = message.content.match(rgxScenario)?.[1], personality = message.content.match(rgxPerson);
                             if (scenario) {
@@ -535,6 +562,7 @@ const updateParams = res => {
                             }
                             message.main = 0 === idx;
                             message.jailbreak = idx === systemMessages.length - 1;
+                            ' ' === message.content && (message.discard = true);
                         }));
                         Config.Settings.AllSamples && !Config.Settings.NoSamples && realLogs.forEach((message => {
                             if (![ lastUser, lastAssistant ].includes(message)) {
@@ -595,6 +623,10 @@ const updateParams = res => {
                     retryRegen || (fetchAPI = await (async (signal, model, prompt, temperature, type) => {
                         const attachments = [];
                         if (Config.Settings.PromptExperiments) {
+/****************************************************************/
+                            let splitprompt = prompt.split('\n\nAltHuman:');
+                            prompt = splitprompt[0];
+/****************************************************************/
                             attachments.push({
                                 extracted_content: (prompt),
                                 file_name: 'paste.txt',  //fileName(),
@@ -602,6 +634,9 @@ const updateParams = res => {
                                 file_type: 'txt'  //'text/plain'
                             });
                             prompt = 'r' === type ? Config.PromptExperimentFirst : Config.PromptExperimentNext;
+/****************************************************************/                            
+                            splitprompt.length > 1 && (prompt = prompt + splitprompt[1]);
+/****************************************************************/                            
                         }
                         let res;
                         const body = {
@@ -673,7 +708,7 @@ const updateParams = res => {
 /******************************** */
                     if (clewdStream.readonly) {
                         Config.CookieArray = Config.CookieArray.filter(item => item !== Config.Cookie);
-                        writeSettings(Config);
+                        (!process.env.Cookie && !process.env.CookieArray) && writeSettings(Config);
                         currentIndex = currentIndex < 1 ? 0 : currentIndex - 1;
                     }
                     changeflag += 1;
@@ -746,13 +781,19 @@ const updateParams = res => {
             writeSettings(Config, true);
         }
 /***************************** */
+        function convertToType(value) {
+            if (value === "true") return true;
+            if (value === "false") return false;
+            if (/^\d+$/.test(value)) return parseInt(value, 10);
+            return value;
+        }
         for (let key in Config) {
             if (key === 'Settings') {
                 for (let setting in Config.Settings) {
-                    Config.Settings[setting] = process.env[setting] ?? Config.Settings[setting];
+                    Config.Settings[setting] = convertToType(process.env[setting]) ?? Config.Settings[setting];
                 }
             } else {
-                Config[key] = key === 'CookieArray' ? (process.env[key]?.split(',')?.map(x => x.replace(/[\[\]"\s]/g, '')) ?? Config[key]) : (process.env[key] ?? Config[key]);
+                Config[key] = key === 'CookieArray' ? (process.env[key]?.split(',')?.map(x => x.replace(/[\[\]"\s]/g, '')) ?? Config[key]) : (convertToType(process.env[key]) ?? Config[key]);
             }
         }
 /***************************** */
@@ -760,6 +801,14 @@ const updateParams = res => {
 /***************************** */
     !Config.rProxy && (Config.rProxy = AI.end());
     Config.rProxy.endsWith('/') && (Config.rProxy = Config.rProxy.slice(0, -1));
+    let uniqueArr = [], seen = new Set();
+    for (let Cookie of Config.CookieArray) {
+        if (!seen.has(Cookie)) {
+            uniqueArr.push(Cookie);
+            seen.add(Cookie);
+        }
+    }
+    Config.CookieArray = uniqueArr;
     Config.Cookiecounter !== -1 && (currentIndex = Math.floor(Math.random() * Config.CookieArray.length));
 /***************************** */
     Proxy.listen(Config.Port, Config.Ip, onListen);
