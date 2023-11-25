@@ -1,0 +1,11 @@
+{
+    "configurations": [
+        {
+            "type": "node-terminal",
+            "name": "clewd启动",
+            "request": "launch",
+            "command": "bash start.sh",
+            "cwd": "${workspaceFolder}"
+        }
+    ]
+}
