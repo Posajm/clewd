@@ -37,6 +37,6 @@
   },
   "dependencies": {
     "localtunnel": "^2.0.2",
-    "gpt-tokenizer": "^2.1.2"
+    "@anthropic-ai/tokenizer": "^0.0.4"
   }
 }
