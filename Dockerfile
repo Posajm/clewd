@@ -13,6 +13,9 @@ RUN npm install --no-audit --fund false
 # Copy the rest of the files to the container
 COPY . .
 
+# Define the port to be exposed (mod)
+EXPOSE 8444/tcp
+
 # Change ownership of files in lib/bin and set permissions
 RUN chown -R node:node lib/bin/* && \
     chmod u+x lib/bin/* && \

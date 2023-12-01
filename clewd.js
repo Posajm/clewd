@@ -7,7 +7,7 @@
 const {createServer: Server, IncomingMessage, ServerResponse} = require('node:http'), {createHash: Hash, randomUUID, randomInt, randomBytes} = require('node:crypto'), {TransformStream, ReadableStream} = require('node:stream/web'), {Readable, Writable} = require('node:stream'), {Blob} = require('node:buffer'), {existsSync: exists, writeFileSync: write, createWriteStream} = require('node:fs'), {join: joinP} = require('node:path'), {ClewdSuperfetch: Superfetch, SuperfetchAvailable} = require('./lib/clewd-superfetch'), {AI, fileName, genericFixes, bytesToSize, setTitle, checkResErr, Replacements, Main} = require('./lib/clewd-utils'), ClewdStream = require('./lib/clewd-stream');
 
 /******************************************************* */
-let currentIndex, Firstlogin = true, changeflag = 0, changetime = 0, totaltime, uuidOrgArray = [], model, tokens, tokenspadtxt;
+let currentIndex, Firstlogin = true, changeflag = 0, changetime = 0, totaltime, uuidOrgArray = [], model, tokens, apiKey;
 
 const events = require('events'), CookieChanger = new events.EventEmitter();
 require('events').EventEmitter.defaultMaxListeners = 0;
@@ -22,56 +22,42 @@ CookieChanger.on('ChangeCookie', () => {
     }));
 });
 
-const CookieCleaner = () => {
+const convertToType = value => {
+    if (value === "true") return true;
+    if (value === "false") return false;
+    if (/^\d+$/.test(value)) return parseInt(value);
+    return value;
+}, CookieCleaner = () => {
     Config.CookieArray = Config.CookieArray.filter(item => item !== Config.Cookie);
-    !process.env.Cookie && !process.env.CookieArray && writeSettings(Config);
+    writeSettings(Config);
     currentIndex = (currentIndex - 1 + Config.CookieArray.length) % Config.CookieArray.length;
 }, padtxt = content => {
     const {countTokens} = require('@anthropic-ai/tokenizer');
     const placeholder = Config.padtxt_placeholder || randomBytes(randomInt(5, 15)).toString('hex');
     tokens = countTokens(content);
-    let count = Math.floor(Math.max(1000, Config.Settings.padtxt - tokens) / countTokens(placeholder)); 
-    let padding = '';
-    for (let i = 0; i < count; i++) {
-        padding += placeholder;
-    }
-    content = padding + '\n\n\n' + content;
-    tokenspadtxt = countTokens(content);
-    return content.trim();
-}, xmlPlot = content => {
-    // 检查内容中是否包含"<card>"
+    !apiKey && (content = placeholder.repeat(Math.floor(Math.max(1000, Config.Settings.padtxt - tokens) / countTokens(placeholder.trim()))) + '\n\n\n' + content.trim());
+    return content;
+}, xmlPlot = (content, nonsys = false) => {
     const card = content.includes('<card>');
-    //<card>越狱倒置
-    if (card) {
-        let segcontentHuman = content.split('\n\nHuman:');
-        const seglength = segcontentHuman.length;
-        if (/Assistant: *.$/.test(content) && seglength > 1 && !segcontentHuman[seglength - 2].includes('\n\nAssistant:')) {
-            segcontentHuman[seglength - 2] = segcontentHuman.splice(seglength - 1, 1, segcontentHuman[seglength - 2])[0];
-        }
-        content = segcontentHuman.join('\n\nHuman:');
-    }
     //role合并
     const MergeDisable = content.includes('<\!-- Merge Disable -->');
     const MergeHumanDisable = content.includes('<\!-- Merge Human Disable -->');
     const MergeAssistantDisable = content.includes('<\!-- Merge Assistant Disable -->');
     if (!MergeDisable) {
-        if (content.includes('<\!-- Merge System Disable -->') || !card) {
+        if (content.includes('<\!-- Merge System Disable -->')) {
             content = content.replace(/(\n\n|^\s*)xmlPlot:\s*/gm, '$1');
         }
         if (!MergeHumanDisable) {
-            content = content.replace(/(\n\n|^\s*)xmlPlot:/g, '$1Human:');
+            nonsys ? content = content.replace(/(\n\n|^\s*)xmlPlot:/g, '\n\nHuman:') : content = content.replace(/(?<!\n\n(Human|Assistant):.*?)(\n\n|^\s*)xmlPlot:\s*/gs, '$1');
             content = content.replace(/(?:\n\n|^\s*)Human:(.*?(?:\n\nAssistant:|$))/gs, function(match, p1) {return '\n\nHuman:' + p1.replace(/\n\nHuman:\s*/g, '\n\n')});
-            content = content.replace(/^\s*Human:\s*/, '');
         }
         if (!MergeAssistantDisable) {
             content = content.replace(/\n\nAssistant:(.*?(?:\n\nHuman:|$))/gs, function(match, p1) {return '\n\nAssistant:' + p1.replace(/\n\nAssistant:\s*/g, '\n\n')});
         }
     }
-    content = content.replace(/(\n\n|^\s*)xmlPlot:\s*/gm, '$1');
-    content = content.replace(/<\!-- Merge.*?Disable -->/gm, '');
+    content = content.replace(/(\n\n|^\s*)xmlPlot:\s*/gm, '$1').replace(/<\!-- Merge.*?Disable -->/gm, '');
     //自定义插入
-    content = content.replace(/(<\/?)PrevAssistant>/gm, '$1@1>');
-    content = content.replace(/(<\/?)PrevHuman>/gm, '$1@2>');
+    content = content.replace(/(<\/?)PrevAssistant>/gm, '$1@1>').replace(/(<\/?)PrevHuman>/gm, '$1@2>');
     let splitContent = content.split(/\n\n(?=Assistant:|Human:)/g);
     let match;
     while ((match = /<@(\d+)>(.*?)<\/@\1>/gs.exec(content)) !== null) {
@@ -103,18 +89,15 @@ const CookieCleaner = () => {
     //Plain Prompt
     let segcontentHuman = content.split('\n\nHuman:');
     let segcontentlastIndex = segcontentHuman.length - 1;
-    if (segcontentlastIndex >= 2 && segcontentHuman[segcontentlastIndex].includes('<!-- Plain Prompt Enable -->') && !content.includes('\n\nPlainPrompt:')) {
-        content = segcontentHuman.slice(0, segcontentlastIndex).join('\n\nHuman:') + '\n\nPlainPrompt:' + segcontentHuman.slice(segcontentlastIndex).join('\n\nHuman:');
+    if (!apiKey && segcontentlastIndex >= 2 && segcontentHuman[segcontentlastIndex].includes('<!-- Plain Prompt Enable -->') && !content.includes('\n\nPlainPrompt:')) {
+        content = segcontentHuman.slice(0, segcontentlastIndex).join('\n\nHuman:') + '\n\nPlainPrompt:' + segcontentHuman.slice(segcontentlastIndex).join('\n\nHuman:').replace(/\n\nHuman: *PlainPrompt:/, '\n\nPlainPrompt:');
     }
     content = content.replace(/<\!-- Plain Prompt Enable -->/gm, '');
-    content = content.replace(/\n\nHuman: *PlainPrompt:/, '\n\nPlainPrompt:');
     //<card>群组
     if (!card) {
-        content = content.replace(/(<reply>\n|\n<\/reply>)/g, '');
-        return content.replace(/<customname>(.*?)<\/customname>/gm, '$1');
+        return content.replace(/(<reply>\n|\n<\/reply>)/g, '').replace(/<customname>(.*?)<\/customname>/gm, '$1');
     } else {
-        content = content.replace(/(<reply>\n|\n<\/reply>)\1*/g, '$1');
-        content = content.replace(/<customname>(.*?)<\/customname>:/gm, '$1:\n');
+        content = content.replace(/(<reply>\n|\n<\/reply>)\1*/g, '$1').replace(/<customname>(.*?)<\/customname>:/gm, '$1:\n');
     }
     //<card>在第一个"[Start a new"前面加上"<example>"，在最后一个"[Start a new"前面加上"</example>\n\n<plot>\n\n"
     const cardtag = content.match(/(?=\n\n<\/card>)/) || '</card>';
@@ -125,14 +108,23 @@ const CookieCleaner = () => {
     firstChatStart != -1 && firstChatStart === lastChatStart && (content = content.slice(0, firstChatStart) + `\n\n${cardtag}` + content.slice(firstChatStart));
     firstChatStart != lastChatStart && (content = content.slice(0, firstChatStart) + `\n\n${cardtag}\n<example>` + content.slice(firstChatStart, lastChatStart) + `\n\n${exampletag}\n\n${plot}` + content.slice(lastChatStart));
     //<card>消除空XML tags、两端空白符和多余的\n
-    content = content.replace(/\s*<\|curtail\|>\s*/g, '\n');
-    content = content.replace(/\n<\/(card|hidden|META)>\s+?<\1>\n/g, '\n');
-    content = content.replace(/\n<(\/?card|example|hidden|plot|META)>\s+?<\1>/g, '\n<$1>');
-    content = content.replace(/(?:<!--.*?-->)?\n<(card|example|hidden|plot|META)>\s+?<\/\1>/g, '');
-    content = content.replace(/(?<=(: |\n)<(card|hidden|example|plot|META|EOT)>\n)\s*/g, '');
-    content = content.replace(/\s*(?=\n<\/(card|hidden|example|plot|META|EOT)>(\n|$))/g, '');
-    content = content.replace(/(?<=\n)\n(?=\n)/g, '');
-    return content.trim();
+    content = content.replace(/\s*<\|curtail\|>\s*/g, '\n')
+        .replace(/\n<\/(card|hidden|META)>\s+?<\1>\n/g, '\n')
+        .replace(/\n<(\/?card|example|hidden|plot|META)>\s+?<\1>/g, '\n<$1>')
+        .replace(/(?:<!--.*?-->)?\n<(card|example|hidden|plot|META)>\s+?<\/\1>/g, '')
+        .replace(/(?<=(: |\n)<(card|hidden|example|plot|META|EOT)>\n)\s*/g, '')
+        .replace(/\s*(?=\n<\/(card|hidden|example|plot|META|EOT)>(\n|$))/g, '')
+        .replace(/(?<=\n)\n(?=\n)/g, '');
+    //确保格式正确
+    if (apiKey) {
+        content = content.trim().replace(/^Human:/, '\n\nHuman:')
+            .replace(/(\n\nAssistant|\n\nHuman):(?!.*?\n\n(Assistant|Human):).*$/s, function(match, p1) {return p1 === '\n\nAssistant' ? match : match + '\n\nAssistant: '})
+            .replace(/\s*<\|noAssistant\|>\s*(.*?)(?:\n\nAssistant:)?$/s, '\n\n$1');
+        content.includes('<|reverseHA|>') && (content = content.replace(/\s*<\|reverseHA\|>\s*/g, '\n\n').replace(/\n\n(Assistant|Human):/g, function(match, p1) {return p1 === 'Human' ? '\n\nAssistant:' : '\n\nHuman:'}))
+        return content;
+    } else {
+        return content.trim().replace(/^Human:|\n\nAssistant:$/g, '');
+    }
 };
 /******************************************************* */
 
@@ -156,6 +148,7 @@ let uuidOrg, curPrompt = {}, prevPrompt = {}, prevMessages = [], prevImpersonate
     BufferSize: 1,
     SystemInterval: 3,
     rProxy: AI.end(),
+    api_rProxy: '',
     padtxt_placeholder: '',
     PromptExperimentFirst: '',
     PromptExperimentNext: '',
@@ -281,8 +274,7 @@ const updateParams = res => {
         CookieCleaner();
         console.log(`[31mExpired![0m`);
         Config.Cookiecounter < 0 && console.log(`[progress]: [32m${percentage.toFixed(2)}%[0m\n[length]: [33m${Config.CookieArray.length}[0m\n`);
-        CookieChanger.emit('ChangeCookie');
-        return;
+        return CookieChanger.emit('ChangeCookie');
     }
 /**************************** */
     await checkResErr(accRes);
@@ -304,7 +296,7 @@ const updateParams = res => {
         }
     });
     await checkResErr(accountRes);
-    const accountInfo = (await accountRes.json());
+    const accountInfo = await accountRes.json();
 /**************************** */
     console.log(Config.CookieArray?.length > 0 ? `(index: [36m${currentIndex || Config.CookieArray.length}[0m) Logged in %o` : 'Logged in %o', { //console.log('Logged in %o', {
         name: accInfo.name?.split('@')?.[0],
@@ -374,11 +366,8 @@ const updateParams = res => {
             return CookieChanger.emit('ChangeCookie');
         }
     }
-    if (Config.Cookiecounter < 0) {
-        console.log(`[progress]: [32m${percentage.toFixed(2)}%[0m\n[length]: [33m${Config.CookieArray.length}[0m\n`);
-        return CookieChanger.emit('ChangeCookie');
-    } else if (Exceededlimit) {
-        console.log(`[35mExceeded limit![0m\n`);
+    if (Config.Cookiecounter < 0 || Exceededlimit) {
+        console.log(Config.Cookiecounter < 0 ? `[progress]: [32m${percentage.toFixed(2)}%[0m\n[length]: [33m${Config.CookieArray.length}[0m\n` : '[35mExceeded limit![0m\n');
         return CookieChanger.emit('ChangeCookie');
 /***************************** */
     }
@@ -394,10 +383,11 @@ const updateParams = res => {
 /***************************** */
     } catch (err) {
         console.error('[33mClewd:[0m\n%o', err);
-        CookieChanger.emit('ChangeCookie');
+        Config.CookieArray?.length > 0 && CookieChanger.emit('ChangeCookie');
     }
 /***************************** */
 }, writeSettings = async (config, firstRun = false) => {
+    if (process.env.Cookie || process.env.CookieArray) return ChangedSettings = '', UnknownSettings = '';
     write(ConfigPath, `/*\n* https://rentry.org/teralomaniac_clewd\n* https://github.com/teralomaniac/clewd\n*/\n\n// SET YOUR COOKIE BELOW\n\nmodule.exports = ${JSON.stringify(config, null, 4)}\n\n/*\n BufferSize\n * How many characters will be buffered before the AI types once\n * lower = less chance of \`PreventImperson\` working properly\n\n ---\n\n SystemInterval\n * How many messages until \`SystemExperiments alternates\`\n\n ---\n\n Other settings\n * https://gitgud.io/ahsk/clewd/#defaults\n * and\n * https://gitgud.io/ahsk/clewd/-/blob/master/CHANGELOG.md\n */`.trim().replace(/((?<!\r)\n|\r(?!\n))/g, '\r\n'));
     if (firstRun) {
         console.warn('[33mconfig file created!\nedit[0m [1mconfig.js[0m [33mto set your settings and restart the program[0m');
@@ -417,7 +407,18 @@ const updateParams = res => {
       case '/v1/models':
         res.json({
             data: [ {
-                id: AI.mdl()
+/***************************** */
+                id: 'claude-2.1'                },{
+                id: 'claude-2.0'                },{
+                id: 'claude-v1.3'               },{
+                id: 'claude-v1.3-100k'          },{
+                id: 'claude-v1.2'               },{
+                id: 'claude-v1.0'               },{
+                id: 'claude-instant-1.2'        },{
+                id: 'claude-instant-v1.1'       },{
+                id: 'claude-instant-v1.1-100k'  },{
+                id: 'claude-instant-v1.0'       //id: AI.mdl()
+/***************************** */
             } ]
         });
         break;
@@ -425,7 +426,7 @@ const updateParams = res => {
       case '/v1/chat/completions':
         ((req, res) => {
             setTitle('recv...');
-            let fetchAPI, changer; //let fetchAPI;
+            let fetchAPI;
             const abortControl = new AbortController, {signal} = abortControl;
             res.socket.on('close', (async () => {
                 abortControl.signal.aborted || abortControl.abort();
@@ -440,8 +441,13 @@ const updateParams = res => {
                     const body = JSON.parse(Buffer.concat(buffer).toString()), temperature = Math.max(.1, Math.min(1, body.temperature));
                     let {messages} = body;
 /************************* */
-                    const authorization = Object.fromEntries(Object.entries(req.headers).map(([key, value]) => [key, value])).authorization;
-                    if (Config.ProxyPassword != '' && authorization != 'Bearer ' + Config.ProxyPassword) {
+                    apiKey = /(?<=^Bearer \s*)sk-ant-api[\w-]*(?=\s*)$/.exec(req.headers.authorization);
+                    let api_max_tokens, api_model;
+                    if (apiKey) {
+                        apiKey = apiKey[0];
+                        api_max_tokens = body.max_tokens;
+                        api_model = body.model;
+                    } else if (Config.ProxyPassword != '' && req.headers.authorization != 'Bearer ' + Config.ProxyPassword) {
                         throw Error('ProxyPassword Wrong');
                     }
 /************************* */
@@ -500,7 +506,7 @@ const updateParams = res => {
                     retryRegen = Config.Settings.RetryRegenerate && samePrompt && null != Conversation.uuid;
                     samePrompt || (prevMessages = JSON.parse(JSON.stringify(messages)));
                     let type = '';
-                    if (retryRegen) {
+                    if (apiKey) { type = 'api'; } else if (retryRegen) { //if (retryRegen) {
                         type = 'R';
                         fetchAPI = await (async (signal, model) => {
                             let res;
@@ -574,16 +580,16 @@ const updateParams = res => {
                             if (next && !Config.Settings.xmlPlot) { //if (next) {
                                 if ('name' in message && 'name' in next) {
                                     if (message.name === next.name) {
-                                        message.content += '\n\n' + next.content; //message.content += '\n' + next.content;
+                                        message.content += '\n' + next.content;
                                         next.merged = true;
                                     }
                                 } else if ('system' !== next.role) {
                                     if (next.role === message.role) {
-                                        message.content += '\n\n' + next.content; //message.content += '\n' + next.content;
+                                        message.content += '\n' + next.content;
                                         next.merged = true;
                                     }
                                 } else {
-                                    message.content += '\n\n' + next.content; //message.content += '\n' + next.content;
+                                    message.content += '\n' + next.content;
                                     next.merged = true;
                                 }
                             }
@@ -631,7 +637,7 @@ const updateParams = res => {
                             message.customname || delete message.name;
                         }));
                         let systems = [];
-                        if (![ 'r', 'R' ].includes(type)) {
+                        if (![ 'r', 'R', 'api' ].includes(type)) {
                             lastUser.strip = true;
                             systemMessages.forEach((message => message.discard = message.discard || 'c-c' === type ? !message.jailbreak : !message.jailbreak && !message.main));
                             systems = systemMessages.filter((message => !message.discard)).map((message => `"${message.content.substring(0, 25).replace(/\n/g, '\\n').trim()}..."`));
@@ -658,25 +664,47 @@ const updateParams = res => {
                             } //
                         }));
                         return {
-                            prompt: prompt.join('').trim(),//genericFixes(prompt.join('')).trim(),
+                            prompt: prompt.join('').trim(), //genericFixes(prompt.join('')).trim(),
                             systems
                         };
                     })(messages, type);
-                    console.log(`${model} [[2m${type}[0m]${!retryRegen && systems.length > 0 ? ' ' + systems.join(' [33m/[0m ') : ''}`);
+                    console.log(`${apiKey ? api_model : model} [[2m${type}[0m]${!retryRegen && systems.length > 0 ? ' ' + systems.join(' [33m/[0m ') : ''}`); //console.log(`${model} [[2m${type}[0m]${!retryRegen && systems.length > 0 ? ' ' + systems.join(' [33m/[0m ') : ''}`);
                     'R' !== type || prompt || (prompt = '...regen...');
 /******************************** */
-                    prompt = Config.Settings.xmlPlot ? xmlPlot(prompt) : genericFixes(prompt);
-                    Config.Settings.FullColon && (prompt = prompt.replace(/(?<=\n\n(H(?:uman)?|A(?:ssistant)?)):[ ]?/g, '： '));
+                    prompt = Config.Settings.xmlPlot ? xmlPlot(prompt, api_model && api_model != 'claude-2.1') : apiKey ? `\n\nHuman: ${genericFixes(prompt)}\n\nAssistant: ` : genericFixes(prompt);
+                    Config.Settings.FullColon && (prompt = apiKey
+                        ? prompt.replace(/(\n\nAssistant|\n\nHuman):/, function(match, p1) {return p1 === '\n\nHuman' ? match : p1 + '：'}).replace(/(\n\nAssistant|\n\nHuman):(?!.*?\n\n(Assistant|Human):)/s, function(match, p1) {return p1 === '\n\nAssistant' ? match : p1 + '：'})
+                        : prompt.replace(/(?<=\n\n(H(?:uman)?|A(?:ssistant)?)):[ ]?/g, '： '));
                     Config.Settings.padtxt && (prompt = padtxt(prompt));
 /******************************** */
-                    Logger?.write(`\n\n-------\n[${(new Date).toLocaleString()}]\n####### PROMPT (${type}):\n${prompt}\n--\n####### [Tokens: ${tokens}/${tokenspadtxt}] REPLY:\n`); //REPLY:\n`);
+                    Logger?.write(`\n\n-------\n[${(new Date).toLocaleString()}]\n####### ${apiKey ? api_model : model} PROMPT (${type}):\n${prompt}\n--\n####### [Tokens: ${tokens}] REPLY:\n`); //Logger?.write(`\n\n-------\n[${(new Date).toLocaleString()}]\n####### PROMPT (${type}):\n${prompt}\n--\n####### REPLY:\n`);
                     retryRegen || (fetchAPI = await (async (signal, model, prompt, temperature, type) => {
+/******************************** */
+                        if (apiKey) {
+                            const res = await fetch(`${Config.api_rProxy ? Config.api_rProxy : 'https://api.anthropic.com'}/v1/complete`, {
+                                method: 'POST',
+                                signal,
+                                headers: {
+                                    'Content-Type': 'application/json',
+                                    'x-api-key': apiKey,
+                                    'anthropic-version': '2023-06-01'
+                                },
+                                body: JSON.stringify({
+                                    model: api_model,
+                                    max_tokens_to_sample: api_max_tokens,
+                                    stream: true,
+                                    prompt,
+                                    temperature
+                                }),
+                            });
+                            await checkResErr(res);
+                            return res;
+                        }
+/******************************** */
                         const attachments = [];
                         if (Config.Settings.PromptExperiments) {
-/******************************** */
-                            let splitedprompt = prompt.split('\n\nPlainPrompt:');
-                            prompt = splitedprompt[0];
-/******************************** */
+                            let splitedprompt = prompt.split('\n\nPlainPrompt:'); //
+                            prompt = splitedprompt[0]; //
                             attachments.push({
                                 extracted_content: (prompt),
                                 file_name: 'paste.txt',  //fileName(),
@@ -684,9 +712,7 @@ const updateParams = res => {
                                 file_type: 'txt'  //'text/plain'
                             });
                             prompt = 'r' === type ? Config.PromptExperimentFirst : Config.PromptExperimentNext;
-/******************************** */
-                            splitedprompt.length > 1 && (prompt = prompt + splitedprompt[1]);
-/******************************** */
+                            splitedprompt.length > 1 && (prompt += splitedprompt[1]); //
                         }
                         let res;
                         const body = {
@@ -721,7 +747,13 @@ const updateParams = res => {
                     })(signal, model, prompt, temperature, type));
                     const response = Writable.toWeb(res);
                     clewdStream = new ClewdStream({
-                        config: Config,
+                        config: {
+                            ...Config,
+                            Settings: {
+                                ...Config.Settings,
+                                Superfetch: apiKey ? false : Config.Settings.Superfetch
+                            }
+                        }, //config: Config,
                         version: Main,
                         minSize: Config.BufferSize,
                         model,
@@ -730,7 +762,7 @@ const updateParams = res => {
                         source: fetchAPI
                     }, Logger);
                     titleTimer = setInterval((() => setTitle('recv ' + bytesToSize(clewdStream.size))), 300);
-                    Config.Settings.Superfetch ? await Readable.toWeb(fetchAPI.body).pipeThrough(clewdStream).pipeTo(response) : await fetchAPI.body.pipeThrough(clewdStream).pipeTo(response);
+                    (!apiKey && Config.Settings.Superfetch) ? await Readable.toWeb(fetchAPI.body).pipeThrough(clewdStream).pipeTo(response) : await fetchAPI.body.pipeThrough(clewdStream).pipeTo(response); //Config.Settings.Superfetch ? await Readable.toWeb(fetchAPI.body).pipeThrough(clewdStream).pipeTo(response) : await fetchAPI.body.pipeThrough(clewdStream).pipeTo(response);
                 } catch (err) {
                     if ('AbortError' === err.name) {
                         res.end();
@@ -752,22 +784,18 @@ const updateParams = res => {
                     prevImpersonated = clewdStream.impersonated;
                     setTitle('ok ' + bytesToSize(clewdStream.size));
                     429 == fetchAPI.status ? console.log(`[35mExceeded limit![0m\n`) : console.log(`${200 == fetchAPI.status ? '[32m' : '[33m'}${fetchAPI.status}![0m\n`); //console.log(`${200 == fetchAPI.status ? '[32m' : '[33m'}${fetchAPI.status}![0m\n`);
-/******************************** */
-                    changeflag += 1;
-                    if (Config.CookieArray?.length > 0 && (429 == fetchAPI.status || (Config.Cookiecounter && changeflag >= Config.Cookiecounter))) {
-                        changeflag = 0;
-                        changer = true;
-                    }
-/******************************** */
                     clewdStream.empty();
                 }
-                /*if (prevImpersonated) {
+                if (!apiKey) { //if (prevImpersonated) {
                     await deleteChat(Conversation.uuid);
-                }*/
 /******************************** */
-                await deleteChat(Conversation.uuid);
-                changer && CookieChanger.emit('ChangeCookie');
+                    changeflag += 1;
+                    if (Config.CookieArray?.length > 0 && (429 == fetchAPI.status || Config.Cookiecounter && changeflag >= Config.Cookiecounter)) {
+                        changeflag = 0;
+                        CookieChanger.emit('ChangeCookie');
+                    }
 /******************************** */
+                }
             }));
         })(req, res);
         break;
@@ -783,7 +811,7 @@ const updateParams = res => {
       default:
         !['/', '/v1', '/favicon.ico'].includes(req.url) && (console.log('unknown request: ' + req.url)); //console.log('unknown request: ' + req.url);
         res.writeHead(200, {'Content-Type': 'text/html'});
-        res.write(`<!DOCTYPE html>\n<html>\n<head>\n<meta charset="utf-8">\n<script>\nfunction copyToClipboard(text) {\n  var textarea = document.createElement("textarea");\n  textarea.textContent = text;\n  textarea.style.position = "fixed";\n  document.body.appendChild(textarea);\n  textarea.select();\n  try {\n    return document.execCommand("copy");\n  } catch (ex) {\n    console.warn("Copy to clipboard failed.", ex);\n    return false;\n  } finally {\n    document.body.removeChild(textarea);\n  }\n}\nfunction copyLink(event) {\n  event.preventDefault();\n  const url = new URL(window.location.href);\n  const link = url.protocol + '//' + url.host + '/v1';\n  copyToClipboard(link);\n  alert('链接已复制: ' + link);\n}\n</script>\n</head>\n<body>\n${Main}<br/><br/>完全开源、免费且禁止商用<br/><br/>反向代理: <a href="v1" onclick="copyLink(event)">点击复制链接</a><br/>填入OpenAI API反向代理并选择OpenAI分类中的claude-2模型（酒馆需打开Show "External" models）<br/><br/>教程与FAQ: <a href="https://rentry.org/teralomaniac_clewd" target="FAQ">https://rentry.org/teralomaniac_clewd</a>\n</body>\n</html>`);
+        res.write(`<!DOCTYPE html>\n<html>\n<head>\n<meta charset="utf-8">\n<script>\nfunction copyToClipboard(text) {\n  var textarea = document.createElement("textarea");\n  textarea.textContent = text;\n  textarea.style.position = "fixed";\n  document.body.appendChild(textarea);\n  textarea.select();\n  try {\n    return document.execCommand("copy");\n  } catch (ex) {\n    console.warn("Copy to clipboard failed.", ex);\n    return false;\n  } finally {\n    document.body.removeChild(textarea);\n  }\n}\nfunction copyLink(event) {\n  event.preventDefault();\n  const url = new URL(window.location.href);\n  const link = url.protocol + '//' + url.host + '/v1';\n  copyToClipboard(link);\n  alert('链接已复制: ' + link);\n}\n</script>\n</head>\n<body>\n${Main}<br/><br/>完全开源、免费且禁止商用<br/><br/>点击复制反向代理: <a href="v1" onclick="copyLink(event)">Copy Link</a><br/>填入OpenAI API反向代理并选择OpenAI分类中的claude模型（酒馆需打开Show "External" models，仅在api模式有模型选择差异）<br/><br/>教程与FAQ: <a href="https://rentry.org/teralomaniac_clewd" target="FAQ">Rentry</a> | <a href="https://discord.com/invite/B7Wr25Z7BZ" target="FAQ">Discord</a><br/><br/><br/>请举报恶意盗用/商用本教程及Clewd修改版的这个B 站up<a href="https://space.bilibili.com/35307060" target="FAQ">浅睡一天一夜</a>\n</body>\n</html>`);
         res.end();
         /*res.json(
             {
@@ -828,38 +856,21 @@ const updateParams = res => {
             Config.Cookie = 'SET YOUR COOKIE HERE';
             writeSettings(Config, true);
         }
-/***************************** */
-        function convertToType(value) {
-            if (value === "true") return true;
-            if (value === "false") return false;
-            if (/^\d+$/.test(value)) return parseInt(value);
-            return value;
-        }
-        for (let key in Config) {
-            if (key === 'Settings') {
-                for (let setting in Config.Settings) {
-                    Config.Settings[setting] = convertToType(process.env[setting]) ?? Config.Settings[setting];
-                }
-            } else {
-                Config[key] = key === 'CookieArray' ? (process.env[key]?.split(',')?.map(x => x.replace(/[\[\]"\s]/g, '')) ?? Config[key]) : (convertToType(process.env[key]) ?? Config[key]);
-            }
-        }
-/***************************** */
     })();
 /***************************** */
-    !Config.rProxy && (Config.rProxy = AI.end());
-    Config.rProxy.endsWith('/') && (Config.rProxy = Config.rProxy.slice(0, -1));
-    let uniqueArr = [], seen = new Set();
-    for (let Cookie of Config.CookieArray) {
-        !/^sessionKey=/.test(Cookie) && (Cookie += 'sessionKey=');
-        if (!seen.has(Cookie)) {
-            uniqueArr.push(Cookie);
-            seen.add(Cookie);
+    for (let key in Config) {
+        if (key === 'Settings') {
+            for (let setting in Config.Settings) {
+                Config.Settings[setting] = convertToType(process.env[setting]) ?? Config.Settings[setting];
+            }
+        } else {
+            Config[key] = key === 'CookieArray' ? (process.env[key]?.split(',')?.map(x => x.replace(/[\[\]"\s]/g, '')) ?? Config[key]) : (convertToType(process.env[key]) ?? Config[key]);
         }
     }
-    Config.CookieArray = uniqueArr;
-    !process.env.Cookie && !process.env.CookieArray && writeSettings(Config);
-    currentIndex = Config.CookieIndex > 0 ? Config.CookieIndex - 1 : Config.Cookiecounter >= 0 ? Math.floor(Math.random()*Config.CookieArray.length) : 0;
+    Config.rProxy = Config.rProxy ? Config.rProxy.replace(/\/$/, '') : AI.end();
+    Config.CookieArray = [...new Set(Config.CookieArray)];
+    writeSettings(Config);
+    currentIndex = Config.CookieIndex > 0 ? Config.CookieIndex - 1 : Config.Cookiecounter >= 0 ? Math.floor(Math.random() * Config.CookieArray.length) : 0;
 /***************************** */
     Proxy.listen(Config.Port, Config.Ip, onListen);
     Proxy.on('error', (err => {
